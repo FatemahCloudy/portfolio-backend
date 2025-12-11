@@ -3,122 +3,80 @@ import express from "express";
 import session from "express-session";
 import MongoStore from "connect-mongo";
 import mongoose from "mongoose";
+import cors from "cors"; 
 import { registerRoutes } from "./routes.js";
-import { setupVite, serveStatic, log } from "./vite.js";
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { log } from "./vite.js";
 
 const app = express();
 
+// CORS
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || "http://localhost:5173", // Your frontend URL
+  credentials: true, // Allow cookies/session
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+// Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: false, limit: '10mb' }));
 
+// Session config
 const sessionStore = MongoStore.create({
-  mongoUrl: process.env.MONGODB_URI || "mongodb://localhost:27017/sessions",
+  mongoUrl: process.env.MONGODB_URI,
   dbName: process.env.MONGODB_DB_NAME || "myapp",
   collectionName: "sessions",
   ttl: 30 * 24 * 60 * 60,
-  autoRemove: 'native',
-  crypto: {
-    secret: process.env.SESSION_ENCRYPTION_SECRET || 'fallback-encryption-secret'
-  }
 });
 
 app.use(
   session({
     store: sessionStore,
-    secret: process.env.SESSION_SECRET || "dev-secret-change-in-production",
+    secret: process.env.SESSION_SECRET,
     resave: false,
     saveUninitialized: false,
     cookie: {
       maxAge: 30 * 24 * 60 * 60 * 1000,
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      sameSite: "none",
     },
   })
 );
 
+// Trust proxy for Render
 app.set("trust proxy", 1);
 
-async function connectToDatabase() {
-  try {
-    await mongoose.connect(
-      process.env.MONGODB_URI || "mongodb://localhost:27017/myapp",
-      {
-        maxPoolSize: 10,
-        serverSelectionTimeoutMS: 5000,
-      }
-    );
-    log("Connected to MongoDB");
-  } catch (error) {
-    console.error("MongoDB connection error:", error);
-  }
-}
+// Connect to MongoDB
+mongoose.connect(process.env.MONGODB_URI)
+  .then(() => log("Connected to MongoDB"))
+  .catch(err => console.error("MongoDB connection error:", err));
 
-await connectToDatabase();
-
+// Logging middleware
 app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
-      }
-
-      if (logLine.length > 80) {
-        logLine = logLine.slice(0, 79) + "…";
-      }
-
-      log(logLine);
-    }
-  });
-
+  log(`${req.method} ${req.path}`);
   next();
 });
 
+// Register routes
 await registerRoutes(app);
 
-app.use((err, _req, res, _next) => {
-  const status = err.status || err.statusCode || 500;
-  const message = err.message || "Internal Server Error";
-
-  res.status(status).json({ message });
-  console.error(err);
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-if (process.env.NODE_ENV === "production") {
-  app.use(express.static(path.join(__dirname, 'public')));
-  
-  app.get('*', (req, res) => {
-    if (!req.path.startsWith('/api')) {
-      res.sendFile(path.join(__dirname, 'public', 'index.html'));
-    }
+// Error handling
+app.use((err, req, res, next) => {
+  console.error(err);
+  res.status(err.status || 500).json({
+    message: err.message || 'Internal Server Error'
   });
-} else {
-  const server = await setupVite(app);
-}
+});
 
-if (process.env.VERCEL !== '1') {
-  const port = parseInt(process.env.PORT || '5000', 10);
-  app.listen(port, () => {
-    log(`Server running on port ${port}`);
-  });
-}
-
-// Export for Vercel Serverless Functions
-export default app;
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => {
+  log(`Backend server running on port ${PORT}`);
+  log(`CORS allowed origin: ${process.env.CORS_ORIGIN || "http://localhost:5173"}`);
+});
