@@ -1,82 +1,90 @@
+// server.js
+import express from 'express';
+import nodemailer from 'nodemailer';
+import cors from 'cors';
 import 'dotenv/config';
-import express from "express";
-import session from "express-session";
-import MongoStore from "connect-mongo";
-import mongoose from "mongoose";
-import cors from "cors"; 
-import { registerRoutes } from "./routes.js";
-import { log } from "./vite.js";
 
 const app = express();
 
-// CORS
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || "http://localhost:5173", // Your frontend URL
-  credentials: true, // Allow cookies/session
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-
 // Middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+app.use(cors());
+app.use(express.json());
 
-// Session config
-const sessionStore = MongoStore.create({
-  mongoUrl: process.env.MONGODB_URI,
-  dbName: process.env.MONGODB_DB_NAME || "myapp",
-  collectionName: "sessions",
-  ttl: 30 * 24 * 60 * 60,
+// Email transporter setup
+const transporter = nodemailer.createTransport({
+  service: 'gmail', // or use your email service
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  },
 });
 
-app.use(
-  session({
-    store: sessionStore,
-    secret: process.env.SESSION_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: {
-      maxAge: 30 * 24 * 60 * 60 * 1000,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
-      sameSite: "none",
-    },
-  })
-);
+// Contact form endpoint
+app.post('/api/contact', async (req, res) => {
+  try {
+    const { name, email, message } = req.body;
 
-// Trust proxy for Render
-app.set("trust proxy", 1);
+    // Validate input
+    if (!name || !email || !message) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'All fields are required' 
+      });
+    }
 
-// Connect to MongoDB
-mongoose.connect(process.env.MONGODB_URI)
-  .then(() => log("Connected to MongoDB"))
-  .catch(err => console.error("MongoDB connection error:", err));
+    // Email content
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: process.env.YOUR_PERSONAL_EMAIL, // Your email to receive messages
+      subject: `Portfolio Contact: ${name}`,
+      html: `
+        <h2>New Contact Form Submission</h2>
+        <p><strong>Name:</strong> ${name}</p>
+        <p><strong>Email:</strong> ${email}</p>
+        <p><strong>Message:</strong></p>
+        <p>${message}</p>
+        <hr>
+        <p>Sent from your portfolio website</p>
+      `,
+    };
 
-// Logging middleware
-app.use((req, res, next) => {
-  log(`${req.method} ${req.path}`);
-  next();
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    // Optional: Send auto-reply to user
+    const autoReplyOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: 'Thanks for contacting me!',
+      html: `
+        <h2>Hi ${name},</h2>
+        <p>Thank you for reaching out! I've received your message and will get back to you soon.</p>
+        <p>Best regards,<br>Your Name</p>
+      `,
+    };
+    
+    await transporter.sendMail(autoReplyOptions);
+
+    res.json({ 
+      success: true, 
+      message: 'Message sent successfully!' 
+    });
+
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to send message' 
+    });
+  }
 });
 
-// Register routes
-await registerRoutes(app);
-
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
-
-// Error handling
-app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({
-    message: err.message || 'Internal Server Error'
-  });
+  res.json({ status: 'ok' });
 });
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
-  log(`Backend server running on port ${PORT}`);
-  log(`CORS allowed origin: ${process.env.CORS_ORIGIN || "http://localhost:5173"}`);
+  console.log(`Contact form backend running on port ${PORT}`);
 });
